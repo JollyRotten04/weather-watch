@@ -1,6 +1,6 @@
 <template>
-  <div class="chart-wrapper" ref="chartWrapper">
-    <div class="chart-scroll" ref="chartScroll">
+  <div class="chart-wrapper hide-chart-scroll" ref="chartWrapper">
+    <div class="chart-scroll hide-chart-scroll" ref="chartScroll">
       <canvas ref="chartCanvas"></canvas>
     </div>
   </div>
@@ -20,7 +20,13 @@ export default defineComponent({
     const chartWrapper = ref<HTMLDivElement | null>(null)
     const chartScroll = ref<HTMLDivElement | null>(null)
     let chartInstance: Chart | null = null
+
     let showingWeekly = false
+    let switchTimeout: ReturnType<typeof setTimeout> | null = null
+
+    // NEW: guards so only user-initiated scroll can trigger a switch
+    let hasScrolledSinceSwitch = false
+    let isProgrammaticScroll = false
 
     // 24h forecast labels
     const hourlyLabels = Array.from({ length: 24 }, (_, i) =>
@@ -147,53 +153,96 @@ export default defineComponent({
       }
     }
 
-    let switchTimeout: ReturnType<typeof setTimeout> | null = null
-
-    const handleScroll = () => {
-        if (!chartWrapper.value || !chartScroll.value || !chartInstance) return
-
-        const { scrollLeft, clientWidth, scrollWidth } = chartWrapper.value
-
-        // Extra null checks just in case
-        if (scrollLeft == null || clientWidth == null || scrollWidth == null) return
-
-        const nearEnd = scrollLeft + clientWidth >= scrollWidth - 10
-        const nearStart = scrollLeft <= 10
-
-        if ((nearEnd && !showingWeekly) || (nearStart && showingWeekly)) {
-            if (!switchTimeout) {
-            switchTimeout = setTimeout(() => {
-                if (!chartInstance || !chartScroll.value) return // safeguard inside timeout too
-
-                if (nearEnd && !showingWeekly) {
-                showingWeekly = true
-                chartInstance.data = buildDataset(weeklyLabels, weeklyData, 'weekly')
-                chartScroll.value.style.width = weeklyLabels.length * 120 + 'px'
-                chartInstance.update()
-                } else if (nearStart && showingWeekly) {
-                showingWeekly = false
-                chartInstance.data = buildDataset(hourlyLabels, hourlyData, 'hourly')
-                chartScroll.value.style.width = hourlyLabels.length * 80 + 'px'
-                chartInstance.update()
-                }
-
-                switchTimeout = null
-            }, 1000) // must hold at edge for 1 second
-            }
-        } else {
-            if (switchTimeout) {
-            clearTimeout(switchTimeout)
-            switchTimeout = null
-            }
-        }
+    // helper: set scrollLeft without triggering our switch logic
+    const safeSetScrollLeft = (pos: number) => {
+      if (!chartWrapper.value) return
+      isProgrammaticScroll = true
+      chartWrapper.value.scrollLeft = pos
+      // clear the flag on the next frame
+      if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+        requestAnimationFrame(() => { isProgrammaticScroll = false })
+      } else {
+        setTimeout(() => { isProgrammaticScroll = false }, 0)
+      }
     }
 
+    let switchTimeoutRef: ReturnType<typeof setTimeout> | null = null
 
+    const handleScroll = () => {
+      if (!chartWrapper.value || !chartScroll.value || !chartInstance) return
+
+      const { scrollLeft, clientWidth, scrollWidth } = chartWrapper.value
+      if (scrollLeft == null || clientWidth == null || scrollWidth == null) return
+
+      // Ignore synthetic/programmatic scrolls
+      if (isProgrammaticScroll) return
+
+      // Mark that the user actually scrolled since last mode change
+      hasScrolledSinceSwitch = true
+
+      const nearEnd = scrollLeft + clientWidth >= scrollWidth - 10
+      const nearStart = scrollLeft <= 10
+
+      // Require user scroll since last switch for BOTH directions
+      const canSwitchToWeekly = nearEnd && !showingWeekly && hasScrolledSinceSwitch
+      const canSwitchToHourly = nearStart && showingWeekly && hasScrolledSinceSwitch
+
+      if (canSwitchToWeekly || canSwitchToHourly) {
+        if (!switchTimeout) {
+          switchTimeout = setTimeout(() => {
+            if (!chartInstance || !chartScroll.value) { switchTimeout = null; return }
+
+            if (canSwitchToWeekly) {
+              showingWeekly = true
+              hasScrolledSinceSwitch = false // reset guard
+              chartInstance.data = buildDataset(weeklyLabels, weeklyData, 'weekly')
+              chartScroll.value.style.width = weeklyLabels.length * 120 + 'px'
+              chartInstance.update()
+
+              // Snap to Monday (start) safely after layout updates
+              if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+                requestAnimationFrame(() => safeSetScrollLeft(0))
+              } else {
+                setTimeout(() => safeSetScrollLeft(0), 0)
+              }
+
+            } else if (canSwitchToHourly) {
+              showingWeekly = false
+              hasScrolledSinceSwitch = false // reset guard
+              chartInstance.data = buildDataset(hourlyLabels, hourlyData, 'hourly')
+              chartScroll.value.style.width = hourlyLabels.length * 80 + 'px'
+              chartInstance.update()
+
+              // Snap to end (latest hour) safely after layout updates
+              if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+                requestAnimationFrame(() => {
+                  if (chartWrapper.value) safeSetScrollLeft(chartWrapper.value.scrollWidth)
+                })
+              } else {
+                setTimeout(() => {
+                  if (chartWrapper.value) safeSetScrollLeft(chartWrapper.value.scrollWidth)
+                }, 0)
+              }
+            }
+
+            switchTimeout = null
+          }, 1000) // must hold at edge for 1 second
+        }
+      } else {
+        if (switchTimeout) {
+          clearTimeout(switchTimeout)
+          switchTimeout = null
+        }
+      }
+    }
+
+    // Keep a separate ref name to avoid shadowing
+    // let switchTimeout: ReturnType<typeof setTimeout> | null = null
 
     onMounted(() => {
       initChart()
       if (chartWrapper.value) {
-        chartWrapper.value.addEventListener('scroll', handleScroll)
+        chartWrapper.value.addEventListener('scroll', handleScroll, { passive: true })
       }
     })
 
@@ -201,6 +250,10 @@ export default defineComponent({
       if (chartInstance) chartInstance.destroy()
       if (chartWrapper.value) {
         chartWrapper.value.removeEventListener('scroll', handleScroll)
+      }
+      if (switchTimeout) {
+        clearTimeout(switchTimeout)
+        switchTimeout = null
       }
     })
 
@@ -230,5 +283,15 @@ export default defineComponent({
 canvas {
   display: block;
   height: 100% !important;
+}
+
+.hide-chart-scroll {
+  overflow-x: scroll;
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;     /* Firefox */
+}
+
+.hide-chart-scroll::-webkit-scrollbar {
+  display: none;             /* Chrome, Safari, Opera */
 }
 </style>
