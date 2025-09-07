@@ -1,17 +1,238 @@
-<!-- Imports -->
-<script setup lang="ts">    
-import { ref } from 'vue'
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import axios from 'axios'
 import Chart from './components/Chart.vue'
 
 // State for main info options
 const infoOptions = ref('Precipitation')
 
 // State for units
-const temperatureUnit = ref('C')
-const windSpeedUnit = ref('kt')
-const gustSpeedUnit = ref('kt')
-const pressureUnit = ref('bar')
-const dewPointUnit = ref('C')
+const temperatureUnit = ref<'C' | 'F' | 'K'>('C')
+const windSpeedUnit = ref<'kt' | 'kph' | 'mph' | 'mps'>('kt')
+const gustSpeedUnit = ref<'kt' | 'kph' | 'mph' | 'mps'>('kt')
+const pressureUnit = ref<'bar' | 'hPa' | 'mb' | 'kt'>('bar') // 'kt' present in UI; handled as hPa fallback
+const dewPointUnit = ref<'C' | 'F' | 'K' | 'PDP'>('C') // PDP = dew point depression
+
+// Fetch Data...
+const weather = ref<any>(null)
+
+// Values (refs so they are reactive in template)
+const location = ref('')
+const temp = ref<number|null>(null) // Visual Crossing provides temp in °C
+const dewPoint = ref<number|null>(null) // °C
+const windSpeed = ref<number|null>(null) // km/h (Visual Crossing uses km/h)
+const windGusts = ref<number|null>(null) // km/h
+const pressure = ref<number|null>(null) // mb / hPa (Visual Crossing uses mb/hPa)
+const airQuality = ref<any>('N/A') // PM2.5 µg/m³
+const aqiIndex = ref<number|null>(null) // OpenWeatherMap AQI index (1–5)
+const chanceOfRain = ref<number|null>(null)
+const conditions = ref('')
+const precipitation = ref('')
+
+
+// -----------------------
+// Helpers & Conversion functions
+// -----------------------
+function isNumber(v: any): v is number {
+  return typeof v === 'number' && !isNaN(v)
+}
+
+function convertTemp(value: number|null, unit: string) {
+  if (!isNumber(value)) return null
+  if (unit === 'F') return (value * 9) / 5 + 32
+  if (unit === 'K') return value + 273.15
+  return value // Celsius
+}
+
+/**
+ * convertWind:
+ *  - input assumed km/h (Visual Crossing)
+ *  - returns number in desired unit
+ */
+function convertWind(value: number|null, unit: string) {
+  if (!isNumber(value)) return null
+  switch (unit) {
+    case 'kt': return value / 1.852 // km/h -> knots
+    case 'mph': return value / 1.609344 // km/h -> mph
+    case 'mps': return value / 3.6 // km/h -> m/s
+    default: return value // 'kph' -> km/h
+  }
+}
+
+/**
+ * convertPressure:
+ *  - input assumed hPa / mb (Visual Crossing)
+ *  - returns number in desired unit
+ */
+function convertPressure(value: number|null, unit: string) {
+  if (!isNumber(value)) return null
+  switch (unit) {
+    case 'bar': return value / 1000 // hPa -> bar
+    case 'hPa': return value // already hPa
+    case 'mb': return value // same as hPa
+    // handle stray 'kt' option in UI by returning hPa
+    default: return value
+  }
+}
+
+function aqiCategory(aqi: number|null) {
+  if (aqi == null) return 'N/A'
+  switch (aqi) {
+    case 1: return 'Good'
+    case 2: return 'Fair'
+    case 3: return 'Moderate'
+    case 4: return 'Poor'
+    case 5: return 'Very Poor'
+    default: return 'N/A'
+  }
+}
+
+function formatNumber(value: number|null, digits = 1) {
+  if (!isNumber(value)) return '--'
+  return value.toFixed(digits)
+}
+
+// -----------------------
+// Computed values (display)
+// -----------------------
+// Temperature (display according to temperatureUnit)
+const displayTemp = computed(() => {
+  const v = convertTemp(temp.value, temperatureUnit.value)
+  return isNumber(v) ? formatNumber(v, 1) : '--'
+})
+// Dew point: handles PDP (dew point depression) when dewPointUnit === 'PDP'
+const displayDewPoint = computed(() => {
+  if (dewPointUnit.value === 'PDP') {
+    // compute (temp - dewPoint) but convert both to the selected temperature unit for display
+    if (!isNumber(temp.value) || !isNumber(dewPoint.value)) return '--'
+    const tConverted = convertTemp(temp.value, temperatureUnit.value) as number
+    const dConverted = convertTemp(dewPoint.value, temperatureUnit.value) as number
+    const pd = tConverted - dConverted
+    return formatNumber(pd, 1)
+  } else {
+    const v = convertTemp(dewPoint.value, dewPointUnit.value)
+    return isNumber(v) ? formatNumber(v, 1) : '--'
+  }
+})
+
+// Wind speed & gusts
+const displayWindSpeed = computed(() => {
+  const v = convertWind(windSpeed.value, windSpeedUnit.value)
+  return isNumber(v) ? formatNumber(v, 1) : '--'
+})
+const displayWindGusts = computed(() => {
+  const v = convertWind(windGusts.value, gustSpeedUnit.value)
+  return isNumber(v) ? formatNumber(v, 1) : '--'
+})
+
+// Pressure
+const displayPressure = computed(() => {
+  const v = convertPressure(pressure.value, pressureUnit.value)
+  return isNumber(v) ? formatNumber(v, 2) : '--'
+})
+
+// Chance of rain
+const displayChanceOfRain = computed(() => {
+  return isNumber(chanceOfRain.value) ? `${Math.round(chanceOfRain.value)}` : '--'
+})
+
+// AQI display: category + index + pm2.5
+const displayAQI = computed(() => {
+  const cat = aqiCategory(aqiIndex.value)
+  const idx = isNumber(aqiIndex.value) ? aqiIndex.value : '--'
+  const pm = isNumber(airQuality.value) ? `${formatNumber(airQuality.value, 1)} µg/m³` : 'N/A'
+  return `${cat} (${idx}) — ${pm}`
+})
+
+// Unit labels/helpers for template
+const tempUnitLabel = computed(() => (temperatureUnit.value === 'C' ? '℃' : temperatureUnit.value === 'F' ? '℉' : 'K'))
+const dewUnitLabel = computed(() => (dewPointUnit.value === 'PDP' ? '' : dewPointUnit.value === 'C' ? '℃' : dewPointUnit.value === 'F' ? '℉' : 'K'))
+const windUnitLabel = computed(() => windSpeedUnit.value)
+const gustUnitLabel = computed(() => gustSpeedUnit.value)
+const pressureUnitLabel = computed(() => pressureUnit.value)
+
+
+// -----------------------
+// Fetch data
+// -----------------------
+async function fetchWeather() {
+  try {
+    const response = await axios.get('http://localhost:3000/weather/Tabaco')
+    weather.value = response.data
+
+    // Visual Crossing part
+    const vc = weather.value.weather
+    // guard
+    if (!vc || !vc.days || !vc.days[0]) {
+      console.error('Visual Crossing data missing days[]')
+      return
+    }
+    const today = vc.days[0]
+
+    location.value = vc.resolvedAddress ?? 'Unknown'
+    temp.value = isNumber(today.temp) ? today.temp : null
+    dewPoint.value = isNumber(today.dew) ? today.dew : null
+    windSpeed.value = isNumber(today.windspeed) ? today.windspeed : null
+    windGusts.value = isNumber(today.windgust) ? today.windgust : null
+    pressure.value = isNumber(today.pressure) ? today.pressure : null
+    chanceOfRain.value = isNumber(today.precipprob) ? today.precipprob : null
+    conditions.value = today.conditions ?? ''
+
+    // OpenWeatherMap Air Quality
+    const aqiData = weather.value.airQuality?.list?.[0]
+    if (aqiData) {
+      aqiIndex.value = isNumber(aqiData.main?.aqi) ? aqiData.main.aqi : null
+      airQuality.value = isNumber(aqiData.components?.pm2_5) ? aqiData.components.pm2_5 : 'N/A'
+    } else {
+      aqiIndex.value = null
+      airQuality.value = 'N/A'
+    }
+
+    // optional: debug
+    // console.log('RAW temp', temp.value, 'display', displayTemp.value)
+  } catch (error) {
+    console.error('Error fetching weather:', error)
+  }
+}
+
+// Time and Date (reactive)
+const currentTime = ref('')
+const currentDate = ref('')
+
+// Get current time and date
+function getDateTime() {
+  const now = new Date()
+
+  // Time in 12-hour format with seconds
+  const time12hr = now.toLocaleString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  })
+
+  // Date in mm/dd/yyyy
+  const mm = String(now.getMonth() + 1).padStart(2, '0') // months are 0-based
+  const dd = String(now.getDate()).padStart(2, '0')
+  const yyyy = now.getFullYear()
+  const dateFormatted = `${mm}/${dd}/${yyyy}`
+
+  // Assign to refs
+  currentDate.value = dateFormatted
+  currentTime.value = time12hr
+}
+
+let intervalId: number
+
+onMounted(() => {
+  fetchWeather() // fetch main data on mount
+  getDateTime() // run immediately
+  intervalId = window.setInterval(getDateTime, 1000) // update every 1s
+})
+
+onUnmounted(() => {
+  clearInterval(intervalId)
+})
 </script>
 
 <template>
@@ -34,9 +255,9 @@ const dewPointUnit = ref('C')
 
           <!-- Basic Info -->
           <div class="flex flex-col">
-            <p class="text-black text-3xl font-sans font-normal text-center">City in Country</p>
-            <p class="text-black text-xl font-sans font-light text-center">Time Right Now</p>
-            <p class="text-black text-lg font-sans font-light text-center">Date Today</p>
+            <p class="text-black text-3xl font-sans font-normal text-center">{{ location }}</p>
+            <p class="text-black text-xl font-sans font-light text-center">{{ currentTime }}</p>
+            <p class="text-black text-base font-sans font-light text-center">{{ currentDate }}</p>
           </div>
 
           <!-- Info Container -->
@@ -71,7 +292,9 @@ const dewPointUnit = ref('C')
                 <div class="flex flex-col justify-center gap-2 portrait:hidden">
                   <div class="bg-gray-300 p-4 rounded-tl-xl rounded-tr-xl shadow-xl w-32 flex flex-col items-center">
                     <p class="text-black font-light text-xs text-center">Friday</p>
-                    <p class="text-black font-normal text-2xl text-center">25℃</p>
+                    <p class="text-black font-normal text-2xl text-center">
+                      {{ displayTemp }}{{ tempUnitLabel }}
+                    </p>
                     <p class="text-black font-normal text-[0.45rem] lg:text-[0.6rem] text-center">Real Feel Temperature</p>
                   </div>
 
@@ -130,7 +353,9 @@ const dewPointUnit = ref('C')
               <div class="flex flex-col gap-2 landscape:hidden">
                 <div class="bg-gray-300 p-4 rounded-tl-xl rounded-tr-xl shadow-xl w-32 flex flex-col items-center">
                   <p class="text-black font-light text-xs sm:text-sm text-center">Friday</p>
-                  <p class="text-black font-normal text-2xl sm:text-3xl text-center">25℃</p>
+                  <p class="text-black font-normal text-2xl sm:text-3xl text-center">
+                    {{ displayTemp }}{{ tempUnitLabel }}
+                  </p>
                   <p class="text-black font-normal text-[0.45rem] sm:text-[0.55rem] text-center">Real Feel Temperature</p>
                 </div>
 
@@ -174,7 +399,7 @@ const dewPointUnit = ref('C')
                     </TransitionGroup>
                   </div>
                   <div class="bg-gray-300 h-28 w-full p-4 rounded-b-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">5 {{ windSpeedUnit }}</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">{{ displayWindSpeed }} {{ windUnitLabel }}</p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Wind Speed</p>
                   </div>
                 </div>
@@ -185,7 +410,8 @@ const dewPointUnit = ref('C')
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
                         v-for="unit in ['kt','kph','mph','mps']"
-                        :key="unit"
+                        :key="unit
+                        "
                         @click="gustSpeedUnit = unit"
                         class="text-[0.55rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
                         :class="[
@@ -198,7 +424,7 @@ const dewPointUnit = ref('C')
                     </TransitionGroup>
                   </div>
                   <div class="bg-gray-300 h-28 w-full p-4 rounded-b-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">8 {{ gustSpeedUnit }}</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">{{ displayWindGusts }} {{ gustUnitLabel }}</p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Gust Speed</p>
                   </div>
                 </div>
@@ -222,7 +448,7 @@ const dewPointUnit = ref('C')
                     </TransitionGroup>
                   </div>
                   <div class="bg-gray-300 h-28 w-full p-4 rounded-b-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">1 {{ pressureUnit }}</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">{{ displayPressure }} {{ pressureUnitLabel }}</p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Atmospheric Pressure</p>
                   </div>
                 </div>
@@ -246,7 +472,15 @@ const dewPointUnit = ref('C')
                     </TransitionGroup>
                   </div>
                   <div class="bg-gray-300 h-28 w-full p-4 rounded-b-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-lg sm:text-xl text-center">10℃ - 15℃</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">
+                      <!-- If PDP selected, show "X °<tempUnitLabel> below" -->
+                      <template v-if="dewPointUnit === 'PDP'">
+                        {{ displayDewPoint }} {{ tempUnitLabel }} (depression)
+                      </template>
+                      <template v-else>
+                        {{ displayDewPoint }}{{ dewUnitLabel }}
+                      </template>
+                    </p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Dew Point Temperature</p>
                   </div>
                 </div>
@@ -254,7 +488,7 @@ const dewPointUnit = ref('C')
                 <!-- Air Quality -->
                 <div class="flex flex-col gap-2 items-center">
                   <div class="bg-gray-300 h-32 landscape:h-full md:h-full sm:h-full w-full p-4 rounded-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">50 AQI</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">{{ displayAQI }}</p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Air Quality</p>
                   </div>
                 </div>
@@ -262,7 +496,7 @@ const dewPointUnit = ref('C')
                 <!-- Chance of Rain -->
                 <div class="flex flex-col gap-2 items-center">
                   <div class="bg-gray-300 h-32 landscape:h-full md:h-full sm:h-full w-full p-4 rounded-xl shadow-xl flex flex-col justify-center items-center">
-                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">60%</p>
+                    <p class="text-black font-normal text-2xl sm:text-3xl text-center">{{ displayChanceOfRain }}%</p>
                     <p class="text-black font-normal text-[0.45rem] sm:text-[0.65rem] text-center">Chance of Rain</p>
                   </div>
                 </div>
