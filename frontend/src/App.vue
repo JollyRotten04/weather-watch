@@ -29,6 +29,8 @@ const chanceOfRain = ref<number|null>(null)
 const conditions = ref('')
 const precipitation = ref('')
 
+// Chart data for different weather metrics
+const chartData = ref<any[]>([])
 
 // -----------------------
 // Helpers & Conversion functions
@@ -93,6 +95,60 @@ function formatNumber(value: number|null, digits = 1) {
 }
 
 // -----------------------
+// Chart data preparation
+// -----------------------
+function prepareChartData() {
+  if (!weather.value || !weather.value.weather || !weather.value.weather.days) {
+    return { daily: [], hourly: [] }
+  }
+
+  const days = weather.value.weather.days.slice(0, 7) // limit to a week
+
+  // --- DAILY DATA ---
+  const daily = days.map((day: any) => {
+    const date = new Date(day.datetimeEpoch * 1000)
+    return {
+      date: day.datetime,
+      day: date.toLocaleDateString('en-US', { weekday: 'short' }),
+
+      // Requested values
+      precipitation: day.precip,
+      humidity: day.humidity,
+      uvIndex: day.uvindex,
+      temp: day.temp,               // average day temp
+      sunrise: day.sunrise,         // e.g. "06:15:00"
+      sunset: day.sunset            // e.g. "18:23:00"
+    }
+  })
+
+  // --- HOURLY DATA ---
+  const hourly = days.flatMap((day: any) => {
+    return (day.hours || []).map((hour: any) => {
+      const date = new Date(hour.datetimeEpoch * 1000)
+      return {
+        date: day.datetime,
+        day: date.toLocaleDateString('en-US', { weekday: 'short' }),
+        time: date.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true }),
+
+        // Requested values
+        precipitation: hour.precip,
+        humidity: hour.humidity,
+        uvIndex: hour.uvindex,
+        temp: hour.temp,
+
+        // No hourly sunrise/sunset → attach the daily ones
+        sunrise: day.sunrise,
+        sunset: day.sunset
+      }
+    })
+  })
+
+  return { daily, hourly }
+}
+
+
+
+// -----------------------
 // Computed values (display)
 // -----------------------
 // Temperature (display according to temperatureUnit)
@@ -100,6 +156,7 @@ const displayTemp = computed(() => {
   const v = convertTemp(temp.value, temperatureUnit.value)
   return isNumber(v) ? formatNumber(v, 1) : '--'
 })
+
 // Dew point: handles PDP (dew point depression) when dewPointUnit === 'PDP'
 const displayDewPoint = computed(() => {
   if (dewPointUnit.value === 'PDP') {
@@ -151,6 +208,18 @@ const windUnitLabel = computed(() => windSpeedUnit.value)
 const gustUnitLabel = computed(() => gustSpeedUnit.value)
 const pressureUnitLabel = computed(() => pressureUnit.value)
 
+// Computed chart data that updates when infoOptions or temperatureUnit changes
+const computedChartData = computed(() => {
+  return prepareChartData(infoOptions.value)
+})
+
+// -----------------------
+// Info option change handler
+// -----------------------
+function handleInfoOptionChange(option: string) {
+  infoOptions.value = option
+  // chartData will be automatically updated via computed property
+}
 
 // -----------------------
 // Fetch data
@@ -188,8 +257,12 @@ async function fetchWeather() {
       airQuality.value = 'N/A'
     }
 
+    // Prepare initial chart data
+    chartData.value = prepareChartData(infoOptions.value)
+
     // optional: debug
-    // console.log('RAW temp', temp.value, 'display', displayTemp.value)
+    console.log('Weather data loaded:', weather.value)
+    console.log('Chart data prepared:', chartData.value)
   } catch (error) {
     console.error('Error fetching weather:', error)
   }
@@ -227,6 +300,7 @@ let intervalId: number
 onMounted(() => {
   fetchWeather() // fetch main data on mount
   getDateTime() // run immediately
+  console.log('Data: ', weather);
   intervalId = window.setInterval(getDateTime, 1000) // update every 1s
 })
 
@@ -239,7 +313,7 @@ onUnmounted(() => {
   <div class="min-h-screen w-full relative">
 
     <!-- Background image -->
-    <img src="./assets/background.svg" class="object-cover min-h-full w-full absolute inset-0 z-1" />
+    <img src="./assets/background.svg" draggable="false" class="object-cover select-none min-h-full w-full absolute inset-0 z-1" />
 
     <!-- Main Container -->
     <div class="relative z-5 w-full md:w-4/5 lg:w-3/5 xl:w-[50rem] p-4 flex flex-col justify-center mx-auto min-h-screen">
@@ -255,9 +329,9 @@ onUnmounted(() => {
 
           <!-- Basic Info -->
           <div class="flex flex-col">
-            <p class="text-black text-3xl font-sans font-normal text-center">{{ location }}</p>
-            <p class="text-black text-xl font-sans font-light text-center">{{ currentTime }}</p>
-            <p class="text-black text-base font-sans font-light text-center">{{ currentDate }}</p>
+            <p class="text-black text-3xl xl:text-5xl font-sans font-normal text-center">{{ location }}</p>
+            <p class="text-black text-xl xl:text-3xl font-sans font-light text-center">{{ currentTime }}</p>
+            <p class="text-black text-base xl:text-xl font-sans font-light text-center">{{ currentDate }}</p>
           </div>
 
           <!-- Info Container -->
@@ -273,7 +347,7 @@ onUnmounted(() => {
                     <div
                       v-for="option in ['Precipitation','Humidity','UV Index','Day Temperature','Sunrise & Sunset']"
                       :key="option"
-                      @click="infoOptions = option"
+                      @click="handleInfoOptionChange(option)"
                       class="p-3 h-12 flex items-center justify-center flex-col rounded-lg cursor-pointer transition-all duration-300 ease-in-out w-full"
                       :class="infoOptions === option 
                         ? 'bg-[#4A67FF] text-white scale-105 shadow-lg' 
@@ -292,7 +366,7 @@ onUnmounted(() => {
                 <div class="flex flex-col justify-center gap-2 portrait:hidden">
                   <div class="bg-gray-300 p-4 rounded-tl-xl rounded-tr-xl shadow-xl w-32 flex flex-col items-center">
                     <p class="text-black font-light text-xs text-center">Friday</p>
-                    <p class="text-black font-normal text-2xl text-center">
+                    <p class="text-black font-normal text-2xl xl:text-3xl text-center">
                       {{ displayTemp }}{{ tempUnitLabel }}
                     </p>
                     <p class="text-black font-normal text-[0.45rem] lg:text-[0.6rem] text-center">Real Feel Temperature</p>
@@ -326,13 +400,13 @@ onUnmounted(() => {
                         <div
                           v-for="option in ['Precipitation','Humidity','UV Index','Day Temperature','Sunrise & Sunset']"
                           :key="option"
-                          @click="infoOptions = option"
+                          @click="handleInfoOptionChange(option)"
                           class="p-3 h-12 flex items-center justify-center flex-col rounded-lg cursor-pointer transition-all duration-300 ease-in-out w-full"
                           :class="infoOptions === option 
                             ? 'bg-[#4A67FF] text-white scale-105 shadow-lg' 
                             : 'bg-white opacity-60 text-black hover:scale-105 hover:shadow-md'"
                         >
-                          <p class="text-[0.5rem] sm:text-[0.5rem] xl:text-[0.6rem] text-center font-semibold">{{ option }}</p>
+                          <p class="text-[0.5rem] sm:text-[0.5rem] xl:text-xs text-center font-semibold">{{ option }}</p>
                         </div>
                       </TransitionGroup>
                     </div>
@@ -340,7 +414,11 @@ onUnmounted(() => {
 
                   <!-- Chart -->
                   <div class="p-2 bg-gray-300 h-48 landscape:h-32 lg:landscape:h-40 xl:landscape:h-48 rounded-xl overflow-hidden">
-                    <Chart />
+                    <Chart 
+                      :data="computedChartData" 
+                      :dataType="infoOptions"
+                      :key="infoOptions + temperatureUnit"
+                    />
                   </div>
                 </div>
               </div>
@@ -410,8 +488,7 @@ onUnmounted(() => {
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
                         v-for="unit in ['kt','kph','mph','mps']"
-                        :key="unit
-                        "
+                        :key="unit"
                         @click="gustSpeedUnit = unit"
                         class="text-[0.55rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
                         :class="[
