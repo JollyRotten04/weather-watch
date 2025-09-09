@@ -1,12 +1,55 @@
+// Imports...
+// import aiRoutes from "./ai.js";
+
 const express = require('express');
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
 const axios = require('axios');
+const fs = require('fs');
+const csv = require('csv-parser');
 
 const PORT = 3000;
 
 app.use(cors());
+
+// mount AI route
+// app.use("/weather", aiRoutes);
+
+let cities = [];
+
+// -----------------------
+// Load cities CSV once at startup
+// -----------------------
+fs.createReadStream('./cities/worldcities.csv')
+  .pipe(csv())
+  .on('data', (row) => {
+    // Keep only major fields you need
+    cities.push({
+      city: row.city,
+      country: row.country,
+      iso2: row.iso2,
+      iso3: row.iso3,
+      lat: row.lat,
+      lng: row.lng,
+      population: row.population,
+      capital: row.capital
+    });
+  })
+  .on("end", () => {
+    // Sort alphabetically by city name
+    cities.sort((a, b) => a.city.localeCompare(b.city));
+
+    console.log(`✅ Loaded ${cities.length} cities from CSV (sorted)`);
+  });
+
+// -----------------------
+// API: Get all cities
+// -----------------------
+app.get("/cities", (req, res) => {
+  res.json(cities);
+});
+
 
 // Weather + Air Quality route
 app.get("/weather/:city", async (req, res) => {

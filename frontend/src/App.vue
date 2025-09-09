@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import axios from 'axios'
 import Chart from './components/Chart.vue'
 
@@ -10,27 +10,167 @@ const infoOptions = ref('Precipitation')
 const temperatureUnit = ref<'C' | 'F' | 'K'>('C')
 const windSpeedUnit = ref<'kt' | 'kph' | 'mph' | 'mps'>('kt')
 const gustSpeedUnit = ref<'kt' | 'kph' | 'mph' | 'mps'>('kt')
-const pressureUnit = ref<'bar' | 'hPa' | 'mb' | 'kt'>('bar') // 'kt' present in UI; handled as hPa fallback
-const dewPointUnit = ref<'C' | 'F' | 'K' | 'PDP'>('C') // PDP = dew point depression
+const pressureUnit = ref<'bar' | 'hPa' | 'mb' | 'kt'>('bar')
+const dewPointUnit = ref<'C' | 'F' | 'K' | 'PDP'>('C')
+
+
+// separate arrays for each v-for
+const temperatureUnits: Array<'C' | 'F' | 'K'> = ['C', 'F', 'K']
+const windSpeedUnits: Array<'kt' | 'kph' | 'mph' | 'mps'> = ['kt','kph','mph','mps']
+const gustSpeedUnits: Array<'kt' | 'kph' | 'mph' | 'mps'> = ['kt','kph','mph','mps']
+const pressureUnits: Array<'bar' | 'hPa' | 'mb' | 'kt'> = ['bar','hPa','mb','kt']
+const dewPointUnits: Array<'C' | 'F' | 'K' | 'PDP'> = ['C','F','K','PDP']
 
 // Fetch Data...
 const weather = ref<any>(null)
 
+// To type the city interface to avoid TypeScript throwing an error, define interfaces
+interface City {
+  city: string
+  country: string
+  iso2: string
+  iso3: string
+  lat: string
+  lng: string
+  population: string
+  capital: string
+}
+
+// Each daily data point
+interface DailyDataPoint {
+  date: string        // e.g., "2025-09-09"
+  day: string         // e.g., "Tue"
+  precipitation: number
+  humidity: number
+  uvIndex: number
+  temp: number
+  sunrise: string     // e.g., "08:00:57"
+  sunset: string      // e.g., "19:36:59"
+}
+
+// Each hourly data point
+interface HourlyDataPoint {
+  date: string        // same as daily
+  day: string
+  time: string        // e.g., "11 AM"
+  precipitation: number
+  humidity: number
+  uvIndex: number
+  temp: number
+  sunrise: string
+  sunset: string
+}
+
+// Chart structure
+interface Chart {
+  daily: DailyDataPoint[]
+  hourly: HourlyDataPoint[]
+}
+
 // Values (refs so they are reactive in template)
 const location = ref('')
-const temp = ref<number|null>(null) // Visual Crossing provides temp in °C
-const dewPoint = ref<number|null>(null) // °C
-const windSpeed = ref<number|null>(null) // km/h (Visual Crossing uses km/h)
-const windGusts = ref<number|null>(null) // km/h
-const pressure = ref<number|null>(null) // mb / hPa (Visual Crossing uses mb/hPa)
-const airQuality = ref<any>('N/A') // PM2.5 µg/m³
-const aqiIndex = ref<number|null>(null) // OpenWeatherMap AQI index (1–5)
+const selectedCity = ref('Tabaco') // Store the actual city name for API calls
+const temp = ref<number|null>(null)
+const dewPoint = ref<number|null>(null)
+const windSpeed = ref<number|null>(null)
+const windGusts = ref<number|null>(null)
+const pressure = ref<number|null>(null)
+const airQuality = ref<any>('N/A')
+const aqiIndex = ref<number|null>(null)
 const chanceOfRain = ref<number|null>(null)
 const conditions = ref('')
-const precipitation = ref('')
+const locations = ref<City[]>([])
+
+// Loading state
+const isLoading = ref(false)
 
 // Chart data for different weather metrics
-const chartData = ref<any[]>([])
+const chartData = ref<Chart>({
+  daily: [],
+  hourly: []
+})
+
+// -----------------------
+// Persistence Functions
+// -----------------------
+const STORAGE_KEYS = {
+  SELECTED_CITY: 'weather_selected_city',
+  SELECTED_LOCATION: 'weather_selected_location',
+  TEMPERATURE_UNIT: 'weather_temp_unit',
+  WIND_SPEED_UNIT: 'weather_wind_unit',
+  PRESSURE_UNIT: 'weather_pressure_unit',
+  DEW_POINT_UNIT: 'weather_dew_unit'
+}
+
+// Save to localStorage
+function saveToStorage(key: string, value: any) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch (error) {
+    console.warn('Could not save to localStorage:', error)
+  }
+}
+
+// Load from localStorage
+function loadFromStorage(key: string, defaultValue: any = null) {
+  try {
+    const stored = localStorage.getItem(key)
+    return stored ? JSON.parse(stored) : defaultValue
+  } catch (error) {
+    console.warn('Could not load from localStorage:', error)
+    return defaultValue
+  }
+}
+
+// Load user preferences on app startup
+function loadUserPreferences() {
+  // Load city preference
+  const savedCity = loadFromStorage(STORAGE_KEYS.SELECTED_CITY)
+  const savedLocation = loadFromStorage(STORAGE_KEYS.SELECTED_LOCATION)
+  
+  if (savedCity && savedLocation) {
+    selectedCity.value = savedCity
+    location.value = savedLocation
+    console.log(`🔄 Restored saved city: ${savedCity}`)
+  }
+
+  // Load unit preferences
+  const savedTempUnit = loadFromStorage(STORAGE_KEYS.TEMPERATURE_UNIT)
+  if (savedTempUnit && ['C', 'F', 'K'].includes(savedTempUnit)) {
+    temperatureUnit.value = savedTempUnit
+  }
+
+  const savedWindUnit = loadFromStorage(STORAGE_KEYS.WIND_SPEED_UNIT)
+  if (savedWindUnit && ['kt', 'kph', 'mph', 'mps'].includes(savedWindUnit)) {
+    windSpeedUnit.value = savedWindUnit
+    gustSpeedUnit.value = savedWindUnit // Keep them in sync
+  }
+
+  const savedPressureUnit = loadFromStorage(STORAGE_KEYS.PRESSURE_UNIT)
+  if (savedPressureUnit && ['bar', 'hPa', 'mb', 'kt'].includes(savedPressureUnit)) {
+    pressureUnit.value = savedPressureUnit
+  }
+
+  const savedDewUnit = loadFromStorage(STORAGE_KEYS.DEW_POINT_UNIT)
+  if (savedDewUnit && ['C', 'F', 'K', 'PDP'].includes(savedDewUnit)) {
+    dewPointUnit.value = savedDewUnit
+  }
+}
+
+// Save user preferences when they change
+function saveUserPreferences() {
+  saveToStorage(STORAGE_KEYS.SELECTED_CITY, selectedCity.value)
+  saveToStorage(STORAGE_KEYS.SELECTED_LOCATION, location.value)
+  saveToStorage(STORAGE_KEYS.TEMPERATURE_UNIT, temperatureUnit.value)
+  saveToStorage(STORAGE_KEYS.WIND_SPEED_UNIT, windSpeedUnit.value)
+  saveToStorage(STORAGE_KEYS.PRESSURE_UNIT, pressureUnit.value)
+  saveToStorage(STORAGE_KEYS.DEW_POINT_UNIT, dewPointUnit.value)
+}
+
+// Watch for changes and save preferences
+watch([selectedCity, temperatureUnit, windSpeedUnit, pressureUnit, dewPointUnit], () => {
+  saveUserPreferences()
+})
 
 // -----------------------
 // Helpers & Conversion functions
@@ -46,33 +186,22 @@ function convertTemp(value: number|null, unit: string) {
   return value // Celsius
 }
 
-/**
- * convertWind:
- *  - input assumed km/h (Visual Crossing)
- *  - returns number in desired unit
- */
 function convertWind(value: number|null, unit: string) {
   if (!isNumber(value)) return null
   switch (unit) {
-    case 'kt': return value / 1.852 // km/h -> knots
-    case 'mph': return value / 1.609344 // km/h -> mph
-    case 'mps': return value / 3.6 // km/h -> m/s
-    default: return value // 'kph' -> km/h
+    case 'kt': return value / 1.852
+    case 'mph': return value / 1.609344
+    case 'mps': return value / 3.6
+    default: return value // 'kph'
   }
 }
 
-/**
- * convertPressure:
- *  - input assumed hPa / mb (Visual Crossing)
- *  - returns number in desired unit
- */
 function convertPressure(value: number|null, unit: string) {
   if (!isNumber(value)) return null
   switch (unit) {
-    case 'bar': return value / 1000 // hPa -> bar
-    case 'hPa': return value // already hPa
-    case 'mb': return value // same as hPa
-    // handle stray 'kt' option in UI by returning hPa
+    case 'bar': return value / 1000
+    case 'hPa': return value
+    case 'mb': return value
     default: return value
   }
 }
@@ -102,26 +231,22 @@ function prepareChartData() {
     return { daily: [], hourly: [] }
   }
 
-  const days = weather.value.weather.days.slice(0, 7) // limit to a week
+  const days = weather.value.weather.days.slice(0, 7)
 
-  // --- DAILY DATA ---
   const daily = days.map((day: any) => {
     const date = new Date(day.datetimeEpoch * 1000)
     return {
       date: day.datetime,
       day: date.toLocaleDateString('en-US', { weekday: 'short' }),
-
-      // Requested values
       precipitation: day.precip,
       humidity: day.humidity,
       uvIndex: day.uvindex,
-      temp: day.temp,               // average day temp
-      sunrise: day.sunrise,         // e.g. "06:15:00"
-      sunset: day.sunset            // e.g. "18:23:00"
+      temp: day.temp,
+      sunrise: day.sunrise,
+      sunset: day.sunset
     }
   })
 
-  // --- HOURLY DATA ---
   const hourly = days.flatMap((day: any) => {
     return (day.hours || []).map((hour: any) => {
       const date = new Date(hour.datetimeEpoch * 1000)
@@ -129,14 +254,10 @@ function prepareChartData() {
         date: day.datetime,
         day: date.toLocaleDateString('en-US', { weekday: 'short' }),
         time: date.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true }),
-
-        // Requested values
         precipitation: hour.precip,
         humidity: hour.humidity,
         uvIndex: hour.uvindex,
         temp: hour.temp,
-
-        // No hourly sunrise/sunset → attach the daily ones
         sunrise: day.sunrise,
         sunset: day.sunset
       }
@@ -146,21 +267,16 @@ function prepareChartData() {
   return { daily, hourly }
 }
 
-
-
 // -----------------------
 // Computed values (display)
 // -----------------------
-// Temperature (display according to temperatureUnit)
 const displayTemp = computed(() => {
   const v = convertTemp(temp.value, temperatureUnit.value)
   return isNumber(v) ? formatNumber(v, 1) : '--'
 })
 
-// Dew point: handles PDP (dew point depression) when dewPointUnit === 'PDP'
 const displayDewPoint = computed(() => {
   if (dewPointUnit.value === 'PDP') {
-    // compute (temp - dewPoint) but convert both to the selected temperature unit for display
     if (!isNumber(temp.value) || !isNumber(dewPoint.value)) return '--'
     const tConverted = convertTemp(temp.value, temperatureUnit.value) as number
     const dConverted = convertTemp(dewPoint.value, temperatureUnit.value) as number
@@ -172,28 +288,25 @@ const displayDewPoint = computed(() => {
   }
 })
 
-// Wind speed & gusts
 const displayWindSpeed = computed(() => {
   const v = convertWind(windSpeed.value, windSpeedUnit.value)
   return isNumber(v) ? formatNumber(v, 1) : '--'
 })
+
 const displayWindGusts = computed(() => {
   const v = convertWind(windGusts.value, gustSpeedUnit.value)
   return isNumber(v) ? formatNumber(v, 1) : '--'
 })
 
-// Pressure
 const displayPressure = computed(() => {
   const v = convertPressure(pressure.value, pressureUnit.value)
   return isNumber(v) ? formatNumber(v, 2) : '--'
 })
 
-// Chance of rain
 const displayChanceOfRain = computed(() => {
   return isNumber(chanceOfRain.value) ? `${Math.round(chanceOfRain.value)}` : '--'
 })
 
-// AQI display: category + index + pm2.5
 const displayAQI = computed(() => {
   const cat = aqiCategory(aqiIndex.value)
   const idx = isNumber(aqiIndex.value) ? aqiIndex.value : '--'
@@ -201,16 +314,15 @@ const displayAQI = computed(() => {
   return `${cat} (${idx}) — ${pm}`
 })
 
-// Unit labels/helpers for template
+// Unit labels
 const tempUnitLabel = computed(() => (temperatureUnit.value === 'C' ? '℃' : temperatureUnit.value === 'F' ? '℉' : 'K'))
 const dewUnitLabel = computed(() => (dewPointUnit.value === 'PDP' ? '' : dewPointUnit.value === 'C' ? '℃' : dewPointUnit.value === 'F' ? '℉' : 'K'))
 const windUnitLabel = computed(() => windSpeedUnit.value)
 const gustUnitLabel = computed(() => gustSpeedUnit.value)
 const pressureUnitLabel = computed(() => pressureUnit.value)
 
-// Computed chart data that updates when infoOptions or temperatureUnit changes
 const computedChartData = computed(() => {
-  return prepareChartData(infoOptions.value)
+  return prepareChartData()
 })
 
 // -----------------------
@@ -218,27 +330,31 @@ const computedChartData = computed(() => {
 // -----------------------
 function handleInfoOptionChange(option: string) {
   infoOptions.value = option
-  // chartData will be automatically updated via computed property
 }
 
 // -----------------------
-// Fetch data
+// Fetch data - Enhanced with persistence
 // -----------------------
-async function fetchWeather() {
+async function fetchWeather(city: string = selectedCity.value) {
   try {
-    const response = await axios.get('http://localhost:3000/weather/Tabaco')
+    isLoading.value = true
+    console.log(`🌤️  Fetching weather data for: "${city}"`)
+    
+    const response = await axios.get(`http://localhost:3000/weather/${encodeURIComponent(city)}`)
     weather.value = response.data
 
-    // Visual Crossing part
     const vc = weather.value.weather
-    // guard
+
     if (!vc || !vc.days || !vc.days[0]) {
       console.error('Visual Crossing data missing days[]')
       return
     }
     const today = vc.days[0]
 
-    location.value = vc.resolvedAddress ?? 'Unknown'
+    // Update both the display location and the selected city
+    location.value = vc.resolvedAddress ?? city
+    selectedCity.value = city
+    
     temp.value = isNumber(today.temp) ? today.temp : null
     dewPoint.value = isNumber(today.dew) ? today.dew : null
     windSpeed.value = isNumber(today.windspeed) ? today.windspeed : null
@@ -247,7 +363,6 @@ async function fetchWeather() {
     chanceOfRain.value = isNumber(today.precipprob) ? today.precipprob : null
     conditions.value = today.conditions ?? ''
 
-    // OpenWeatherMap Air Quality
     const aqiData = weather.value.airQuality?.list?.[0]
     if (aqiData) {
       aqiIndex.value = isNumber(aqiData.main?.aqi) ? aqiData.main.aqi : null
@@ -257,51 +372,127 @@ async function fetchWeather() {
       airQuality.value = 'N/A'
     }
 
-    // Prepare initial chart data
-    chartData.value = prepareChartData(infoOptions.value)
+    chartData.value = prepareChartData()
 
-    // optional: debug
-    console.log('Weather data loaded:', weather.value)
-    console.log('Chart data prepared:', chartData.value)
+    // console.log(`✅ Weather data loaded for ${city}:`, weather.value)
+    
+    // Save the successfully loaded city
+    saveUserPreferences()
+
+    // ⬇️ NEW TIMEZONE HANDLING
+    const tz = vc.timezone ?? 'UTC'
+    if (intervalId) clearInterval(intervalId)
+    updateDateTime(tz)
+    intervalId = window.setInterval(() => updateDateTime(tz), 1000)
+    
   } catch (error) {
-    console.error('Error fetching weather:', error)
+    console.error(`❌ Error fetching weather for ${city}:`, error)
+  } finally {
+    isLoading.value = false
   }
 }
 
-// Time and Date (reactive)
+// -----------------------
+// Fetch all locations
+// -----------------------
+async function fetchLocations() {
+  try {
+    const response = await axios.get('http://localhost:3000/cities')
+    const data = response.data
+
+    if (!data || !Array.isArray(data)) {
+      console.error('Locations response missing or invalid')
+      locations.value = []
+      return
+    }
+
+    locations.value = data
+    // console.log('📍 Locations loaded:', locations.value.length)
+  } catch (error) {
+    console.error('Error fetching locations:', error)
+    locations.value = []
+  }
+}
+
+// -----------------------
+// Time and Date (timezone-aware)
+// -----------------------
 const currentTime = ref('')
 const currentDate = ref('')
+let intervalId: number
 
-// Get current time and date
-function getDateTime() {
+function updateDateTime(timezone: string) {
   const now = new Date()
 
-  // Time in 12-hour format with seconds
-  const time12hr = now.toLocaleString('en-US', {
+  currentTime.value = now.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     second: '2-digit',
     hour12: true,
+    timeZone: timezone,
   })
 
-  // Date in mm/dd/yyyy
-  const mm = String(now.getMonth() + 1).padStart(2, '0') // months are 0-based
-  const dd = String(now.getDate()).padStart(2, '0')
-  const yyyy = now.getFullYear()
-  const dateFormatted = `${mm}/${dd}/${yyyy}`
-
-  // Assign to refs
-  currentDate.value = dateFormatted
-  currentTime.value = time12hr
+  currentDate.value = now.toLocaleDateString('en-US', {
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+    timeZone: timezone,
+  })
 }
 
-let intervalId: number
+// -----------------------
+// Dropdown state
+// -----------------------
+const showDropdown = ref(false)
+const searchQuery = ref('')
 
-onMounted(() => {
-  fetchWeather() // fetch main data on mount
-  getDateTime() // run immediately
-  console.log('Data: ', weather);
-  intervalId = window.setInterval(getDateTime, 1000) // update every 1s
+function toggleDropdown() {
+  showDropdown.value = !showDropdown.value
+  if (!showDropdown.value) {
+    searchQuery.value = ''
+  }
+}
+
+function closeDropdown() {
+  showDropdown.value = false
+  searchQuery.value = ''
+}
+
+const filteredLocations = computed(() => {
+  if (!searchQuery.value) return locations.value.slice(0, 20)
+  return locations.value.filter(loc =>
+    loc.city.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+    loc.country.toLowerCase().includes(searchQuery.value.toLowerCase())
+  ).slice(0, 20)
+})
+
+// Enhanced selectLocation function with persistence
+async function selectLocation(loc: any) {
+  console.log('Selected location:', loc)
+  
+  showDropdown.value = false
+  searchQuery.value = ''
+  
+  // Update both display and storage values
+  const displayLocation = `${loc.city}, ${loc.country}`
+  location.value = displayLocation
+  selectedCity.value = loc.city
+  
+  // Save immediately and then fetch
+  saveUserPreferences()
+  await fetchWeather(loc.city)
+}
+
+onMounted(async () => {
+  // Load user preferences first
+  loadUserPreferences()
+  
+  await fetchLocations()
+  
+  // Use the saved city or default to Tabaco
+  await fetchWeather(selectedCity.value)
+  
+  console.log(`🔄 App started with city: ${selectedCity.value}`)
 })
 
 onUnmounted(() => {
@@ -309,6 +500,7 @@ onUnmounted(() => {
 })
 </script>
 
+<!-- The template remains exactly the same as your original -->
 <template>
   <div class="min-h-screen w-full relative">
 
@@ -327,12 +519,87 @@ onUnmounted(() => {
         <!-- Content -->
         <div class="relative z-20 w-full p-4 lg:p-6 xl:p-8 flex flex-col gap-8">
 
-          <!-- Basic Info -->
-          <div class="flex flex-col">
-            <p class="text-black text-3xl xl:text-5xl font-sans font-normal text-center">{{ location }}</p>
-            <p class="text-black text-xl xl:text-3xl font-sans font-light text-center">{{ currentTime }}</p>
-            <p class="text-black text-base xl:text-xl font-sans font-light text-center">{{ currentDate }}</p>
-          </div>
+         <!-- Basic Info -->
+<div class="flex flex-col relative">
+  <!-- Location trigger with loading indicator -->
+  <div class="relative">
+    <p 
+      class="text-black text-3xl xl:text-5xl font-sans font-normal text-center cursor-pointer hover:text-blue-600 transition-colors duration-200"
+      :class="{ 'opacity-50': isLoading }"
+      @click="toggleDropdown"
+    >
+      {{ location || 'Loading...' }}
+    </p>
+    
+    <!-- Loading spinner -->
+    <div 
+      v-if="isLoading" 
+      class="absolute top-1/2 right-4 transform -translate-y-1/2"
+    >
+      <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+    </div>
+  </div>
+
+  <!-- Dropdown Modal -->
+  <div 
+    v-if="showDropdown" 
+    class="absolute top-full mt-2 bg-white border border-gray-300 rounded-lg shadow-lg z-50 w-72 left-1/2 transform -translate-x-1/2 max-h-80 overflow-y-auto"
+    @click.stop
+  >
+    <!-- Searchbar -->
+    <div class="p-3 border-b border-gray-200 sticky top-0 bg-white">
+      <input 
+        type="text" 
+        v-model="searchQuery"
+        placeholder="Search city or country..."
+        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+        @keydown.escape="closeDropdown"
+      />
+    </div>
+
+    <!-- City list -->
+    <ul class="max-h-60 overflow-y-auto">
+      <li 
+        v-for="loc in filteredLocations" 
+        :key="`${loc.city}-${loc.country}`" 
+        @click="selectLocation(loc)"
+        class="px-4 py-3 hover:bg-gray-100 cursor-pointer transition-colors duration-150 flex justify-between items-center"
+      >
+        <div>
+          <div class="font-medium text-gray-900">{{ loc.city }}</div>
+          <div class="text-sm text-gray-500">{{ loc.country }}</div>
+        </div>
+      </li>
+      
+      <!-- No results message -->
+      <li 
+        v-if="filteredLocations.length === 0 && searchQuery" 
+        class="px-4 py-3 text-gray-500 text-center"
+      >
+        No cities found
+      </li>
+      
+      <!-- Loading message -->
+      <li 
+        v-if="filteredLocations.length === 0 && !searchQuery && locations.length === 0" 
+        class="px-4 py-3 text-gray-500 text-center"
+      >
+        Loading cities...
+      </li>
+    </ul>
+  </div>
+
+  <!-- Overlay to close dropdown when clicking outside -->
+  <div 
+    v-if="showDropdown" 
+    class="fixed inset-0 z-40" 
+    @click="closeDropdown"
+  ></div>
+
+  <!-- Time & Date -->
+  <p class="text-black text-xl xl:text-3xl font-sans font-light text-center">{{ currentTime }}</p>
+  <p class="text-black text-base xl:text-xl font-sans font-light text-center">{{ currentDate }}</p>
+</div>
 
           <!-- Info Container -->
           <div class="flex flex-col gap-4 overflow-x-hidden w-full">
@@ -375,7 +642,7 @@ onUnmounted(() => {
                   <div class="flex gap-2 w-full">
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
-                        v-for="unit in ['C','F']"
+                        v-for="unit in temperatureUnits"
                         :key="unit"
                         @click="temperatureUnit = unit"
                         class="text-sm font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -383,9 +650,9 @@ onUnmounted(() => {
                           temperatureUnit === unit
                             ? 'bg-[#E3A789] text-gray-200 scale-105 shadow-md'
                             : 'bg-gray-300 text-black hover:scale-105 hover:shadow-sm',
-                          unit === 'C' ? 'rounded-bl-xl' : 'rounded-br-xl'
+                          unit === 'C' ? 'rounded-bl-xl' : unit === 'K' ? 'rounded-br-xl' : ''
                         ]"
-                      >{{ unit === 'C' ? '℃' : '℉' }}</button>
+                      >{{ unit === 'C' ? '℃' : unit === 'F' ? '℉' : 'K' }}</button>
                     </TransitionGroup>
                   </div>
                 </div>
@@ -440,7 +707,7 @@ onUnmounted(() => {
                 <div class="flex gap-2 w-full">
                   <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                     <button
-                      v-for="unit in ['C','F']"
+                      v-for="unit in temperatureUnits"
                       :key="unit"
                       @click="temperatureUnit = unit"
                       class="text-sm sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -448,9 +715,9 @@ onUnmounted(() => {
                         temperatureUnit === unit
                           ? 'bg-[#E3A789] text-gray-200 scale-105 shadow-md'
                           : 'bg-gray-300 text-black hover:scale-105 hover:shadow-sm',
-                        unit === 'C' ? 'rounded-bl-xl' : 'rounded-br-xl'
+                        unit === 'C' ? 'rounded-bl-xl' : unit === 'K' ? 'rounded-br-xl' : ''
                       ]"
-                    >{{ unit === 'C' ? '℃' : '℉' }}</button>
+                    >{{ unit === 'C' ? '℃' : unit === 'F' ? '℉' : 'K' }}</button>
                   </TransitionGroup>
                 </div>
               </div>
@@ -463,7 +730,7 @@ onUnmounted(() => {
                   <div class="flex gap-2 w-full">
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
-                        v-for="unit in ['kt','kph','mph','mps']"
+                        v-for="unit in windSpeedUnits"
                         :key="unit"
                         @click="windSpeedUnit = unit"
                         class="text-[0.6rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -487,7 +754,7 @@ onUnmounted(() => {
                   <div class="flex gap-2 w-full">
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
-                        v-for="unit in ['kt','kph','mph','mps']"
+                        v-for="unit in gustSpeedUnits"
                         :key="unit"
                         @click="gustSpeedUnit = unit"
                         class="text-[0.55rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -511,7 +778,7 @@ onUnmounted(() => {
                   <div class="flex gap-2 w-full">
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
-                        v-for="unit in ['bar','kt','hPa','mb']"
+                        v-for="unit in pressureUnits"
                         :key="unit"
                         @click="pressureUnit = unit"
                         class="text-[0.6rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -519,7 +786,7 @@ onUnmounted(() => {
                           pressureUnit === unit
                             ? 'bg-[#E3A789] text-gray-200 scale-105 shadow-md'
                             : 'bg-gray-300 text-black hover:scale-105 hover:shadow-sm',
-                          unit === 'bar' ? 'rounded-tl-xl' : unit === 'mb' ? 'rounded-tr-xl' : ''
+                          unit === 'bar' ? 'rounded-tl-xl' : unit === 'kt' ? 'rounded-tr-xl' : ''
                         ]"
                       >{{ unit }}</button>
                     </TransitionGroup>
@@ -535,7 +802,7 @@ onUnmounted(() => {
                   <div class="flex gap-2 w-full">
                     <TransitionGroup name="fade-scale" tag="div" class="flex gap-2 w-full">
                       <button
-                        v-for="unit in ['C','F','PDP','K']"
+                        v-for="unit in dewPointUnits"
                         :key="unit"
                         @click="dewPointUnit = unit"
                         class="text-[0.6rem] sm:text-base font-extralight p-1 px-1.5 w-full cursor-pointer transition-all duration-300 ease-in-out"
@@ -543,7 +810,7 @@ onUnmounted(() => {
                           dewPointUnit === unit
                             ? 'bg-[#E3A789] text-gray-200 scale-105 shadow-md'
                             : 'bg-gray-300 text-black hover:scale-105 hover:shadow-sm',
-                          unit === 'C' ? 'rounded-tl-xl' : unit === 'K' ? 'rounded-tr-xl' : ''
+                          unit === 'C' ? 'rounded-tl-xl' : unit === 'PDP' ? 'rounded-tr-xl' : ''
                         ]"
                       >{{ unit === 'C' ? '℃' : unit === 'F' ? '℉' : unit }}</button>
                     </TransitionGroup>

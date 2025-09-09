@@ -7,7 +7,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, onMounted, onUnmounted, watch, PropType } from 'vue'
+import { defineComponent, ref, onMounted, onUnmounted, watch, type PropType } from 'vue'
 import { Chart, registerables } from 'chart.js'
 
 Chart.register(...registerables)
@@ -109,7 +109,7 @@ export default defineComponent({
     ) => {
       const isWeekly = mode === 'weekly'
       const colors = getColorScheme(props.dataType, isWeekly)
-      const unit = getDataUnit()
+      // const unit = getDataUnit()
 
       return {
         labels: [...labels],
@@ -145,66 +145,68 @@ export default defineComponent({
     }
 
     const getChartOptions = (data: number[]) => {
-      const unit = getDataUnit()
-      const maxValue = getMaxValue(data)
+  const unit = getDataUnit()
+  const maxValue = getMaxValue(data)
 
-      return {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-            titleColor: '#ffffff',
-            bodyColor: '#ffffff',
-            displayColors: false,
-            callbacks: {
-              label: function (context: any) {
-                const value = context.parsed.y
-                if (props.dataType === 'Sunrise & Sunset') {
-                  return `${value.toFixed(1)} hours daylight`
-                }
-                return `${value}${unit ? ' ' + unit : ''}`
-              }
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+        titleColor: '#ffffff',
+        bodyColor: '#ffffff',
+        displayColors: false,
+        callbacks: {
+          label: function (context: any) {
+            const value = context.parsed.y
+            if (props.dataType === 'Sunrise & Sunset') {
+              return `${value.toFixed(1)} hours daylight`
             }
+            return `${value}${unit ? ' ' + unit : ''}`
           }
-        },
-        scales: {
-          x: {
-            grid: {
-              drawTicks: false,
-              drawBorder: false,
-              color: 'rgba(0,0,0,0.3)',
-              borderDash: [4, 4],
-            },
-            ticks: {
-              color: '#6B7280',
-              font: { size: 10 }
-            }
-          },
-          y: {
-            min: 0,
-            max: maxValue,
-            ticks: {
-              stepSize: Math.max(1, Math.floor(maxValue / 10)),
-              callback: (value: number) => {
-                if (props.dataType === 'Sunrise & Sunset') {
-                  return `${value}h`
-                }
-                return `${value}${unit ? ' ' + unit : ''}`
-              },
-              color: '#6B7280',
-              font: { size: 10 }
-            },
-            grid: { color: '#E0E0E0' }
-          }
-        },
-        interaction: {
-          intersect: false,
-          mode: 'index' as const
         }
       }
+    },
+    scales: {
+      x: {
+        grid: {
+          drawTicks: false,
+          drawBorder: false,
+          color: 'rgba(0,0,0,0.3)',
+          borderDash: [4, 4],
+        },
+        ticks: {
+          color: '#6B7280',
+          font: { size: 10 }
+        }
+      },
+      y: {
+        min: 0,
+        max: maxValue,
+        ticks: {
+          stepSize: Math.max(1, Math.floor(maxValue / 10)),
+          // ✅ Fixed callback signature
+          callback: function(tickValue: string | number) {
+            const value = typeof tickValue === 'string' ? parseFloat(tickValue) : tickValue
+            if (props.dataType === 'Sunrise & Sunset') {
+              return `${value}h`
+            }
+            return `${value}${unit ? ' ' + unit : ''}`
+          },
+          color: '#6B7280',
+          font: { size: 10 }
+        },
+        grid: { color: '#E0E0E0' }
+      }
+    },
+    interaction: {
+      intersect: false,
+      mode: 'index' as const
     }
+  }
+}
 
     const initChart = () => {
       if (chartCanvas.value) {
