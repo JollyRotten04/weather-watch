@@ -13,6 +13,21 @@ const PORT = 3000;
 
 app.use(cors());
 
+const allowedOrigins = [
+  "http://localhost:5173",              // local frontend
+  "https://weather-watch-frontend-0thx.onrender.com"  // deployed frontend
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  }
+}));
+
 // mount AI route
 // app.use("/weather", aiRoutes);
 
@@ -96,4 +111,4 @@ app.get("/weather/:city", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on ${PORT}`));
