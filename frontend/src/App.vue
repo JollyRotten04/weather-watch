@@ -340,7 +340,7 @@ async function fetchWeather(city: string = selectedCity.value) {
     isLoading.value = true
     console.log(`🌤️  Fetching weather data for: "${city}"`)
     
-    const response = await axios.get(`http://localhost:3000/weather/${encodeURIComponent(city)}`)
+    const response = await axios.get(`https://weather-watch-n8jw.onrender.com/weather/${encodeURIComponent(city)}`)
     weather.value = response.data
 
     const vc = weather.value.weather
@@ -397,7 +397,7 @@ async function fetchWeather(city: string = selectedCity.value) {
 // -----------------------
 async function fetchLocations() {
   try {
-    const response = await axios.get('http://localhost:3000/cities')
+    const response = await axios.get('https://weather-watch-n8jw.onrender.com/cities')
     const data = response.data
 
     if (!data || !Array.isArray(data)) {
