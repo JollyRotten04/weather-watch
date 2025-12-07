@@ -131,7 +131,6 @@ function loadUserPreferences() {
   if (savedCity && savedLocation) {
     selectedCity.value = savedCity
     location.value = savedLocation
-    console.log(`🔄 Restored saved city: ${savedCity}`)
   }
 
   // Load unit preferences
@@ -183,7 +182,7 @@ function convertTemp(value: number|null, unit: string) {
   if (!isNumber(value)) return null
   if (unit === 'F') return (value * 9) / 5 + 32
   if (unit === 'K') return value + 273.15
-  return value // Celsius
+  return value
 }
 
 function convertWind(value: number|null, unit: string) {
@@ -192,7 +191,7 @@ function convertWind(value: number|null, unit: string) {
     case 'kt': return value / 1.852
     case 'mph': return value / 1.609344
     case 'mps': return value / 3.6
-    default: return value // 'kph'
+    default: return value
   }
 }
 
@@ -338,7 +337,6 @@ function handleInfoOptionChange(option: string) {
 async function fetchWeather(city: string = selectedCity.value) {
   try {
     isLoading.value = true
-    console.log(`🌤️  Fetching weather data for: "${city}"`)
     
     const response = await axios.get(`https://weather-watch-n8jw.onrender.com/weather/${encodeURIComponent(city)}`)
     weather.value = response.data
@@ -374,19 +372,16 @@ async function fetchWeather(city: string = selectedCity.value) {
 
     chartData.value = prepareChartData()
 
-    // console.log(`✅ Weather data loaded for ${city}:`, weather.value)
-    
-    // Save the successfully loaded city
     saveUserPreferences()
 
-    // ⬇️ NEW TIMEZONE HANDLING
+
     const tz = vc.timezone ?? 'UTC'
     if (intervalId) clearInterval(intervalId)
     updateDateTime(tz)
     intervalId = window.setInterval(() => updateDateTime(tz), 1000)
     
   } catch (error) {
-    console.error(`❌ Error fetching weather for ${city}:`, error)
+    console.error(`Error fetching weather for ${city}:`, error)
   } finally {
     isLoading.value = false
   }
@@ -407,7 +402,6 @@ async function fetchLocations() {
     }
 
     locations.value = data
-    // console.log('📍 Locations loaded:', locations.value.length)
   } catch (error) {
     console.error('Error fetching locations:', error)
     locations.value = []
@@ -491,8 +485,6 @@ onMounted(async () => {
   
   // Use the saved city or default to Tabaco
   await fetchWeather(selectedCity.value)
-  
-  console.log(`🔄 App started with city: ${selectedCity.value}`)
 })
 
 onUnmounted(() => {
@@ -665,7 +657,7 @@ onUnmounted(() => {
                     <div class="flex justify-center gap-4 w-full">
                       <TransitionGroup name="fade-scale" tag="div" class="flex gap-4 w-full">
                         <div
-                          v-for="option in ['Precipitation','Humidity','UV Index','Day Temperature','Sunrise & Sunset']"
+                          v-for="option in ['Precipitation','Humidity','UV Index','Day Temperature']"
                           :key="option"
                           @click="handleInfoOptionChange(option)"
                           class="p-3 h-12 flex items-center justify-center flex-col rounded-lg cursor-pointer transition-all duration-300 ease-in-out w-full"
@@ -685,6 +677,7 @@ onUnmounted(() => {
                       :data="computedChartData" 
                       :dataType="infoOptions"
                       :key="infoOptions + temperatureUnit"
+                      :isLoading="isLoading"
                     />
                   </div>
                 </div>

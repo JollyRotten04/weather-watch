@@ -1,19 +1,15 @@
-<template>
-  <div class="chart-wrapper hide-chart-scroll" ref="chartWrapper">
-    <div class="chart-scroll hide-chart-scroll" ref="chartScroll">
-      <canvas ref="chartCanvas"></canvas>
-    </div>
-  </div>
-</template>
-
 <script lang="ts">
-import { defineComponent, ref, onMounted, onUnmounted, watch, type PropType } from 'vue'
+import { defineComponent, ref, onMounted, onUnmounted, watch, nextTick, type PropType } from 'vue'
 import { Chart, registerables } from 'chart.js'
+import LoadingIcon from './LoadingIcon.vue';
 
 Chart.register(...registerables)
 
 export default defineComponent({
   name: 'Chart',
+  components: {
+    LoadingIcon
+  },
   props: {
     data: {
       type: Object as PropType<{ daily: any[], hourly: any[] }>,
@@ -22,7 +18,11 @@ export default defineComponent({
     dataType: {
       type: String,
       default: 'Precipitation'
-    }
+    },
+    isLoading: {
+      type: Boolean,
+      default: true
+    },
   },
   setup(props) {
     const chartCanvas = ref<HTMLCanvasElement | null>(null)
@@ -43,12 +43,6 @@ export default defineComponent({
         case 'Humidity': return item.humidity
         case 'UV Index': return item.uvIndex
         case 'Day Temperature': return item.temp
-        case 'Sunrise & Sunset': {
-          const sunrise = new Date(`1970-01-01T${item.sunrise}Z`)
-          const sunset = new Date(`1970-01-01T${item.sunset}Z`)
-          const hours = (sunset.getTime() - sunrise.getTime()) / (1000 * 60 * 60)
-          return Number(hours.toFixed(1))
-        }
         default: return 0
       }
     }
@@ -76,7 +70,6 @@ export default defineComponent({
         case 'Humidity': return '%'
         case 'UV Index': return ''
         case 'Day Temperature': return '°C'
-        case 'Sunrise & Sunset': return 'h'
         default: return ''
       }
     }
@@ -93,7 +86,6 @@ export default defineComponent({
         'Humidity': { primary: '#2563EB', rgba: '37, 99, 235' },
         'UV Index': { primary: '#F59E0B', rgba: '245, 158, 11' },
         'Day Temperature': { primary: '#EF4444', rgba: '239, 68, 68' },
-        'Sunrise & Sunset': { primary: '#F97316', rgba: '249, 115, 22' }
       }
       const colors = colorMap[dataType] || colorMap['Precipitation']
       if (isWeekly) {
@@ -187,12 +179,8 @@ export default defineComponent({
         max: maxValue,
         ticks: {
           stepSize: Math.max(1, Math.floor(maxValue / 10)),
-          // ✅ Fixed callback signature
           callback: function(tickValue: string | number) {
             const value = typeof tickValue === 'string' ? parseFloat(tickValue) : tickValue
-            if (props.dataType === 'Sunrise & Sunset') {
-              return `${value}h`
-            }
             return `${value}${unit ? ' ' + unit : ''}`
           },
           color: '#6B7280',
@@ -208,7 +196,13 @@ export default defineComponent({
   }
 }
 
-    const initChart = () => {
+   const initChart = () => {
+      // 1. SAFETY: Kill any existing chart before creating a new one
+      if (chartInstance) {
+        chartInstance.destroy()
+        chartInstance = null
+      }
+
       if (chartCanvas.value) {
         const ctx = chartCanvas.value.getContext('2d')
         if (ctx) {
@@ -221,8 +215,15 @@ export default defineComponent({
             options: getChartOptions(hourlyData)
           })
 
+          // Setup Scroll Width
           if (chartScroll.value) {
             chartScroll.value.style.width = hourlyLabels.length * 80 + 'px'
+          }
+
+          // 2. SAFETY: Re-attach scroll listener (because the div was re-created)
+          if (chartWrapper.value) {
+             chartWrapper.value.removeEventListener('scroll', handleScroll)
+             chartWrapper.value.addEventListener('scroll', handleScroll, { passive: true })
           }
         }
       }
@@ -298,33 +299,68 @@ export default defineComponent({
       }
     }
 
-    watch(() => [props.data, props.dataType], () => {
-      updateChart()
-      console.log('📊 Chart received new data:', props.data)
-    }, { deep: true })
-
-    onMounted(() => {
-      initChart()
-      if (chartWrapper.value) {
-        chartWrapper.value.addEventListener('scroll', handleScroll, { passive: true })
+    // --- MASTER WATCHER (Replaces onMounted) ---
+    const renderOrUpdateChart = async () => {
+      // 1. If Loading: Destroy chart to prevent memory leaks & zombies
+      if (props.isLoading) {
+        if (chartInstance) {
+          chartInstance.destroy()
+          chartInstance = null
+        }
+        return 
       }
-    })
 
+      // 2. If Loading Finished: Wait for Vue to create the <canvas>
+      await nextTick()
+
+      // 3. Safety Check: Does the canvas actually exist now?
+      if (!chartCanvas.value) return
+
+      // 4. Force Init (Because we destroyed it in step 1)
+      if (!chartInstance) {
+        initChart()
+      } else {
+        updateChart()
+      }
+    }
+
+    // Watch EVERYTHING: Loading state, Data, and Data Type
+    watch(
+      () => [props.isLoading, props.data, props.dataType], 
+      () => { renderOrUpdateChart() },
+      { deep: true, immediate: true } // immediate: true handles the initial mount
+    )
+
+    // Cleanup when leaving the page entirely
     onUnmounted(() => {
       if (chartInstance) chartInstance.destroy()
       if (chartWrapper.value) {
         chartWrapper.value.removeEventListener('scroll', handleScroll)
       }
-      if (switchTimeout) {
-        clearTimeout(switchTimeout)
-        switchTimeout = null
-      }
+      if (switchTimeout) clearTimeout(switchTimeout)
     })
 
     return { chartCanvas, chartWrapper, chartScroll }
   }
 })
 </script>
+
+<template>
+
+  <!-- While data is being loaded -->
+  <div v-if="isLoading" class="flex h-full w-full flex-col justify-center items-center">
+
+    <h1 class="text-2xl bold">Loading...</h1>
+
+    <LoadingIcon />
+  </div>
+
+  <div v-else class="chart-wrapper hide-chart-scroll" ref="chartWrapper">
+    <div class="chart-scroll hide-chart-scroll" ref="chartScroll">
+      <canvas ref="chartCanvas"></canvas>
+    </div>
+  </div>
+</template>
 
 <style scoped>
 .chart-wrapper {
